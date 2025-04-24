@@ -1,0 +1,133 @@
+from telegram import Update, ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove
+from telegram.ext import (
+    ApplicationBuilder,
+    CommandHandler,
+    MessageHandler,
+    filters,
+    ContextTypes,
+    ConversationHandler,
+)
+
+import os
+import logging
+
+# -------------------------
+# Настройки и константы
+# -------------------------
+ASK_NAME, ASK_CONTACT = range(2)  # состояния диалога
+
+ADMIN_ID = 245084180  # ID чата (или пользователя), куда отправлять заявки
+BOT_TOKEN = os.getenv(
+    "BOT_TOKEN", "8006999841:AAGXnOqWhfE35TU8IyIhc6Q17PjHkK_M3dk"
+)  # 👉 Рекомендуется вынести токен в переменные окружения!
+POLICY_URL = "https://example.com/privacy-policy"
+
+# Логирование (по желанию)
+logging.basicConfig(
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
+)
+logger = logging.getLogger(__name__)
+
+
+# -------------------------
+# Хэндлеры бота
+# -------------------------
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Точка входа в диалог."""
+    await update.message.reply_text(
+        "Здравствуйте! Я – ваш бот‑консультант по судебному банкротству.\n"
+        "Предлагаю бесплатную первичную консультацию и честную юридическую помощь.\n"
+        "Мы не обещаем 100 % результата, но наш опыт показывает, что при полном соблюдении всех требований суда "
+        "более 99,8 % дел завершаются успешно.\n\n"
+        "Чтобы продолжить, введите своё имя и фамилию:"
+    )
+    return ASK_NAME
+
+
+async def ask_name(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Сохраняем имя и запрашиваем контакт."""
+    context.user_data["name"] = update.message.text.strip()
+
+    await update.message.reply_text(
+        "Спасибо! Пожалуйста, отправьте контактный телефон для связи с вами.\n"
+        "Нажимая кнопку ниже, вы даёте согласие на обработку персональных данных согласно нашей "
+        f"[Политике конфиденциальности]({POLICY_URL}).",
+        reply_markup=ReplyKeyboardMarkup(
+            [[KeyboardButton("Отправить контакт ☎️", request_contact=True)]],
+            resize_keyboard=True,
+            one_time_keyboard=True,
+        ),
+        parse_mode="Markdown",
+    )
+    return ASK_CONTACT
+
+
+async def ask_contact(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Получаем телефон и отправляем заявку админу."""
+    contact = update.message.contact
+    phone = contact.phone_number if contact else update.message.text.strip()
+    context.user_data["phone"] = phone
+
+    # Формируем и отправляем заявку администратору
+    admin_message = (
+        "📨 *Новая заявка на банкротство*\n"
+        f"👤 Имя: {context.user_data['name']}\n"
+        f"📞 Телефон: {phone}\n"
+        f"🆔 Telegram ID клиента: {update.effective_user.id}"
+    )
+
+    try:
+        await context.bot.send_message(
+            chat_id=ADMIN_ID, text=admin_message, parse_mode="Markdown"
+        )
+    except Exception as err:
+        logger.error("Не удалось отправить сообщение админу: %s", err)
+
+    # Подтверждаем пользователю
+    await update.message.reply_text(
+        "Спасибо! Мы свяжемся с вами в ближайшее время для бесплатной консультации.\n"
+        "Учтите, что окончательный результат зависит от конкретной ситуации и решения суда, "
+        "но мы сделаем всё возможное для защиты ваших интересов.",
+        reply_markup=ReplyKeyboardRemove(),
+    )
+    return ConversationHandler.END
+
+
+async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Прерываем диалог по запросу пользователя."""
+    await update.message.reply_text(
+        "Вы отменили процесс. Если передумаете, просто напишите /start.",
+        reply_markup=ReplyKeyboardRemove(),
+    )
+    return ConversationHandler.END
+
+
+# -------------------------
+# Запуск приложения
+# -------------------------
+
+def main() -> None:
+    """Создаём и запускаем приложение."""
+    app = ApplicationBuilder().token(BOT_TOKEN).build()
+
+    conv_handler = ConversationHandler(
+        entry_points=[CommandHandler("start", start)],
+        states={
+            ASK_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, ask_name)],
+            ASK_CONTACT: [
+                MessageHandler(
+                    (filters.CONTACT | filters.TEXT) & ~filters.COMMAND, ask_contact
+                )
+            ],
+        },
+        fallbacks=[CommandHandler("cancel", cancel)],
+    )
+
+    app.add_handler(conv_handler)
+
+    logger.info("Бот запущен и ждёт сообщения…")
+    app.run_polling()
+
+
+if __name__ == "__main__":
+    main()
